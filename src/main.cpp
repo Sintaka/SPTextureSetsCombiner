@@ -1,57 +1,66 @@
-// src/main.cpp
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#include "stb_image_write.h"
-
-#include "config_parser.h"
-#include "png_decoder.h"
-#include "fnmatch.h"
-
-#include <iostream>
+// src/main.cpp - 重写处理逻辑
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
 #include <string>
-#include <cstdint>
-#include <algorithm>
 #include <list>
 #include <memory>
+#include <algorithm>
+#include "png_decoder.h"
+#include "config_parser.h"
+#include <fnmatch.h>
 
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
-#define mkdir(path, mode) _mkdir(path)
+#define PATH_SEPARATOR '\\'
 #else
 #include <sys/stat.h>
-#include <sys/sysinfo.h>
 #include <dirent.h>
+#define PATH_SEPARATOR '/'
 #endif
 
-// 获取系统总内存（字节）
-size_t getSystemMemory() {
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
+// 目标纹理尺寸 8192x8192 RGBA
+constexpr uint32_t TARGET_SIZE = 8192;
+constexpr size_t TARGET_BUFFER_SIZE = TARGET_SIZE * TARGET_SIZE * 4;
+
+// 内存预算：系统内存的80%
+size_t getMemoryBudget() {
 #ifdef _WIN32
-    MEMORYSTATUSEX memInfo;
-    memInfo.dwLength = sizeof(MEMORYSTATUSEX);
-    GlobalMemoryStatusEx(&memInfo);
-    return (size_t)memInfo.ullTotalPhys;
+    MEMORYSTATUSEX status;
+    status.dwLength = sizeof(status);
+    GlobalMemoryStatusEx(&status);
+    return static_cast<size_t>(status.ullTotalPhys * 0.8);
 #else
-    struct sysinfo info;
-    sysinfo(&info);
-    return (size_t)info.totalram * info.mem_unit;
+    return 8ULL * 1024 * 1024 * 1024; // 默认8GB
 #endif
 }
 
-// 扫描目录，返回匹配的文件列表
-std::vector<std::string> scanDirectory(const std::string& dir, const std::string& pattern) {
-    std::vector<std::string> files;
+bool createDirectory(const std::string& path) {
+#ifdef _WIN32
+    return _mkdir(path.c_str()) == 0 || errno == EEXIST;
+#else
+    return mkdir(path.c_str(), 0755) == 0 || errno == EEXIST;
+#endif
+}
+
+std::vector<std::string> findMatchingFiles(const std::string& dir, const std::string& pattern) {
+    std::vector<std::string> results;
     
 #ifdef _WIN32
-    std::string search_path = dir + "\\*";
     WIN32_FIND_DATAA find_data;
+    std::string search_path = dir + "\\*";
     HANDLE hFind = FindFirstFileA(search_path.c_str(), &find_data);
     
     if (hFind != INVALID_HANDLE_VALUE) {
         do {
             if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-                if (fnmatch(pattern.c_str(), find_data.cFileName, 0) == 0) {
-                    files.push_back(dir + "\\" + find_data.cFileName);
+                std::string filename = find_data.cFileName;
+                if (fnmatch(pattern.c_str(), filename.c_str(), 0) == 0) {
+                    results.push_back(dir + PATH_SEPARATOR + filename);
                 }
             }
         } while (FindNextFileA(hFind, &find_data));
@@ -64,7 +73,7 @@ std::vector<std::string> scanDirectory(const std::string& dir, const std::string
         while ((entry = readdir(dp)) != nullptr) {
             if (entry->d_type == DT_REG) {
                 if (fnmatch(pattern.c_str(), entry->d_name, 0) == 0) {
-                    files.push_back(dir + "/" + entry->d_name);
+                    results.push_back(dir + PATH_SEPARATOR + entry->d_name);
                 }
             }
         }
@@ -72,179 +81,203 @@ std::vector<std::string> scanDirectory(const std::string& dir, const std::string
     }
 #endif
     
-    return files;
+    return results;
 }
 
-// 创建目录
-bool createDirectory(const std::string& path) {
-#ifdef _WIN32
-    return _mkdir(path.c_str()) == 0 || errno == EEXIST;
-#else
-    return mkdir(path.c_str(), 0755) == 0 || errno == EEXIST;
-#endif
-}
+// 单个解码器的状态
+struct DecoderState {
+    std::unique_ptr<PNGDecoder> decoder;
+    uint32_t target_x;  // 在目标缓冲区中的起始X坐标
+    uint32_t target_y;  // 在目标缓冲区中的起始Y坐标
+    std::string filename;
+};
 
-// 估算IDAT大小（快速估计，不完全解析）
-size_t estimateIDATSize(const std::string& filename) {
-    FILE* fp = fopen(filename.c_str(), "rb");
-    if (!fp) return 0;
-    
-    fseek(fp, 8, SEEK_SET); // 跳过PNG签名
-    
-    size_t total_idat = 0;
-    while (!feof(fp)) {
-        uint8_t chunk_header[8];
-        if (fread(chunk_header, 1, 8, fp) != 8) break;
-        
-        uint32_t length = ((uint32_t)chunk_header[0] << 24) | 
-                         ((uint32_t)chunk_header[1] << 16) | 
-                         ((uint32_t)chunk_header[2] << 8) | 
-                         (uint32_t)chunk_header[3];
-        uint32_t type = ((uint32_t)chunk_header[4] << 24) | 
-                       ((uint32_t)chunk_header[5] << 16) | 
-                       ((uint32_t)chunk_header[6] << 8) | 
-                       (uint32_t)chunk_header[7];
-        
-        if (type == 0x49444154) { // IDAT
-            total_idat += length;
-        } else if (type == 0x49454E44) { // IEND
-            break;
-        }
-        
-        fseek(fp, length + 4, SEEK_CUR); // 跳过数据和CRC
-    }
-    
-    fclose(fp);
-    return total_idat;
-}
-
-// 处理单个纹理模式
 void processTexturePattern(const Config& config, const TexturePattern& pattern) {
-    const uint32_t TARGET_SIZE = 8192;
-    const size_t TARGET_BUFFER_SIZE = TARGET_SIZE * TARGET_SIZE * 4;
-    
-    printf("\n处理模式: %s -> %s\n", pattern.glob_pattern.c_str(), 
+    printf("\n处理纹理模式: %s -> %s\n", 
+           pattern.glob_pattern.c_str(), 
            pattern.output_filename.c_str());
     
-    // 分配目标缓冲区
-    std::vector<uint8_t> target_buffer(TARGET_BUFFER_SIZE);
+    // 查找匹配的文件
+    std::vector<std::string> files = findMatchingFiles(config.source_dir, pattern.glob_pattern);
     
-    // 初始化为默认像素颜色
-    uint8_t default_r = pattern.default_pixel & 0xFF;
-    uint8_t default_g = (pattern.default_pixel >> 8) & 0xFF;
-    uint8_t default_b = (pattern.default_pixel >> 16) & 0xFF;
-    uint8_t default_a = (pattern.default_pixel >> 24) & 0xFF;
-    
-    for (size_t i = 0; i < TARGET_SIZE * TARGET_SIZE; i++) {
-        target_buffer[i * 4 + 0] = default_r;
-        target_buffer[i * 4 + 1] = default_g;
-        target_buffer[i * 4 + 2] = default_b;
-        target_buffer[i * 4 + 3] = default_a;
-    }
-    
-    // 扫描匹配的文件
-    std::vector<std::string> matching_files = scanDirectory(config.source_dir, 
-                                                            pattern.glob_pattern);
-    
-    if (matching_files.empty()) {
-        printf("警告: 未找到匹配的文件\n");
+    if (files.empty()) {
+        fprintf(stderr, "警告: 没有找到匹配的文件: %s\n", pattern.glob_pattern.c_str());
         return;
     }
     
-    printf("找到 %zu 个匹配文件\n", matching_files.size());
+    printf("找到 %zu 个匹配的文件\n", files.size());
     
-    // 获取系统内存
-    size_t system_memory = getSystemMemory();
-    size_t max_memory = (size_t)(system_memory * 0.8);
-    size_t current_batch_memory = TARGET_BUFFER_SIZE;
+    // 解析文件名，提取UDIM坐标
+    struct TileInfo {
+        std::string filepath;
+        uint32_t u;
+        uint32_t v;
+    };
     
-    printf("系统内存: %.2f GB, 最大使用: %.2f GB\n", 
-           system_memory / (1024.0 * 1024.0 * 1024.0),
-           max_memory / (1024.0 * 1024.0 * 1024.0));
+    std::vector<TileInfo> tiles;
     
-    // 活跃解码器列表
-    std::list<std::unique_ptr<PNGDecoder>> active_decoders;
-    std::list<std::string> pending_files(matching_files.begin(), matching_files.end());
-    
-    size_t total_files = matching_files.size();
-    size_t processed_files = 0;
-    
-    // 主处理循环
-    while (!pending_files.empty() || !active_decoders.empty()) {
-        // 尝试加载新文件
-        while (!pending_files.empty() && current_batch_memory < max_memory) {
-            std::string file = pending_files.front();
-            
-            // 估算IDAT大小
-            size_t idat_size = estimateIDATSize(file);
-            size_t decoder_memory = idat_size + 138 * 1024; // IDAT + 138KB开销
-            
-            if (current_batch_memory + decoder_memory > max_memory) {
-                break; // 内存不足，等待现有解码器完成
-            }
-            
-            // 创建解码器
-            auto decoder = std::make_unique<PNGDecoder>();
-            if (decoder->initialize(file)) {
-                current_batch_memory += decoder->getMemoryUsage();
-                active_decoders.push_back(std::move(decoder));
-                printf("加载: %s (内存: %.2f MB, 总计: %.2f MB)\n", 
-                       file.c_str(),
-                       decoder_memory / (1024.0 * 1024.0),
-                       current_batch_memory / (1024.0 * 1024.0));
-            } else {
-                fprintf(stderr, "警告: 无法初始化解码器: %s\n", file.c_str());
-            }
-            
-            pending_files.pop_front();
-        }
+    for (const auto& file : files) {
+        size_t last_sep = file.find_last_of("/\\");
+        std::string filename = (last_sep != std::string::npos) ? 
+                               file.substr(last_sep + 1) : file;
         
-        // 轮询所有活跃解码器解压一行
-        for (auto it = active_decoders.begin(); it != active_decoders.end(); ) {
-            auto& decoder = *it;
-            
-            if (decoder->isFinished()) {
-                ++it;
-                continue;
-            }
-            
-            // 解压下一行
-            if (decoder->decompressNextRow()) {
-                // 写入目标缓冲区
-                decoder->writeRowToTarget(target_buffer.data(), TARGET_SIZE);
+        size_t dot_pos = filename.rfind('.');
+        if (dot_pos == std::string::npos) continue;
+        
+        std::string before_ext = filename.substr(0, dot_pos);
+        size_t udim_pos = before_ext.rfind(".1");
+        
+        if (udim_pos != std::string::npos && udim_pos + 6 <= before_ext.length()) {
+            std::string udim_str = before_ext.substr(udim_pos + 1, 4);
+            if (udim_str.length() == 4 && udim_str[0] == '1' && 
+                isdigit(udim_str[1]) && isdigit(udim_str[2]) && isdigit(udim_str[3])) {
                 
-                // 检查是否完成
-                if (decoder->isFinished()) {
-                    processed_files++;
-                    size_t released_memory = decoder->getMemoryUsage();
-                    current_batch_memory -= released_memory;
-                    
-                    printf("完成: %s [%zu/%zu] (释放: %.2f MB)\n", 
-                           decoder->getSourceFilename().c_str(),
-                           processed_files, total_files,
-                           released_memory / (1024.0 * 1024.0));
-                }
-            } else {
-                fprintf(stderr, "警告: 解压失败: %s\n", 
-                        decoder->getSourceFilename().c_str());
-                processed_files++;
-                size_t released_memory = decoder->getMemoryUsage();
-                current_batch_memory -= released_memory;
+                int udim = atoi(udim_str.c_str());
+                uint32_t u = (udim - 1001) % 10;
+                uint32_t v = (udim - 1001) / 10;
+                
+                tiles.push_back({file, u, v});
+                printf("  %s -> UDIM %d -> UV(%u, %u)\n", 
+                       filename.c_str(), udim, u, v);
             }
-            
-            ++it;
         }
-        
-        // 移除已完成的解码器
-        active_decoders.remove_if([](const std::unique_ptr<PNGDecoder>& d) {
-            return d->isFinished();
-        });
     }
     
-    // 写入输出文件
-    std::string output_path = config.destination_dir + "\\" + pattern.output_filename;
+    if (tiles.empty()) {
+        fprintf(stderr, "警告: 没有找到有效的UDIM文件\n");
+        return;
+    }
     
-    printf("写入输出: %s\n", output_path.c_str());
+    // 创建目标缓冲区并用默认颜色填充
+    std::vector<uint8_t> target_buffer(TARGET_BUFFER_SIZE);
+    uint32_t default_color = pattern.default_pixel;
+    
+    // 修正：0xRRGGBBAA 格式
+    uint8_t a = (default_color >> 24) & 0xFF;
+    uint8_t b = (default_color >> 16) & 0xFF;
+    uint8_t g = (default_color >> 8) & 0xFF;
+    uint8_t r = default_color & 0xFF;
+    
+    printf("默认颜色: 0x%08X -> R=%u G=%u B=%u A=%u\n", default_color, r, g, b, a);
+    
+    for (size_t i = 0; i < TARGET_SIZE * TARGET_SIZE; i++) {
+        target_buffer[i * 4 + 0] = r;
+        target_buffer[i * 4 + 1] = g;
+        target_buffer[i * 4 + 2] = b;
+        target_buffer[i * 4 + 3] = a;
+    }
+    
+    printf("初始化目标缓冲区: %.2f MB\n", 
+           TARGET_BUFFER_SIZE / (1024.0 * 1024.0));
+    
+    // 逐个处理每个tile
+    for (size_t tile_idx = 0; tile_idx < tiles.size(); tile_idx++) {
+        const auto& tile = tiles[tile_idx];
+        
+        printf("\n[%zu/%zu] 处理: %s (UV: %u,%u)\n", 
+               tile_idx + 1, tiles.size(), tile.filepath.c_str(), tile.u, tile.v);
+        
+        // 创建解码器
+        auto decoder = std::make_unique<PNGDecoder>();
+        if (!decoder->initialize(tile.filepath)) {
+            fprintf(stderr, "错误: 无法初始化解码器\n");
+            continue;
+        }
+        
+        uint32_t tile_width = decoder->getWidth();
+        uint32_t tile_height = decoder->getHeight();
+        
+        // 计算在目标缓冲区中的位置
+        uint32_t target_x = tile.u * 1024;
+        uint32_t target_y = tile.v * 1024;
+        
+        printf("  尺寸: %ux%u, 目标位置: (%u, %u)\n",
+               tile_width, tile_height, target_x, target_y);
+        
+        // 逐行解压并写入
+        uint32_t rows_processed = 0;
+        uint32_t pixels_written = 0;
+        
+        while (!decoder->isFinished()) {
+            if (!decoder->decompressNextRow()) {
+                fprintf(stderr, "错误: 解压失败于行 %u\n", rows_processed);
+                break;
+            }
+            
+            // 获取当前行数据
+            const uint8_t* row_data;
+            if (decoder->getBitDepth() == 16) {
+                row_data = decoder->getOutputRow();
+            } else {
+                row_data = decoder->getRowBuffer() + 1;
+            }
+            
+            // 写入目标缓冲区 - 只写入非透明像素
+            uint32_t y = target_y + rows_processed;
+            if (y >= TARGET_SIZE) break;
+            
+            for (uint32_t x = 0; x < tile_width && (target_x + x) < TARGET_SIZE; x++) {
+                uint32_t src_offset = x * 4;
+                uint8_t src_alpha = row_data[src_offset + 3];
+                
+                // 只有当源像素的 Alpha > 0 时才写入
+                if (src_alpha > 0) {
+                    uint32_t target_offset = (y * TARGET_SIZE + (target_x + x)) * 4;
+                    
+                    target_buffer[target_offset + 0] = row_data[src_offset + 0];
+                    target_buffer[target_offset + 1] = row_data[src_offset + 1];
+                    target_buffer[target_offset + 2] = row_data[src_offset + 2];
+                    target_buffer[target_offset + 3] = row_data[src_offset + 3];
+                    
+                    pixels_written++;
+                }
+            }
+            
+            rows_processed++;
+        }
+        
+        printf("  完成: %u 行, 写入 %u 个非透明像素\n", rows_processed, pixels_written);
+        
+        // 验证写入：查找第一个非透明像素
+        bool found_pixel = false;
+        for (uint32_t check_y = target_y; check_y < target_y + tile_height && check_y < TARGET_SIZE; check_y++) {
+            for (uint32_t check_x = target_x; check_x < target_x + tile_width && check_x < TARGET_SIZE; check_x++) {
+                uint32_t check_offset = (check_y * TARGET_SIZE + check_x) * 4;
+                if (target_buffer[check_offset + 3] > 0) {
+                    printf("  验证: 找到第一个非透明像素在 (%u,%u), RGBA=(%u,%u,%u,%u)\n",
+                           check_x, check_y,
+                           target_buffer[check_offset + 0],
+                           target_buffer[check_offset + 1],
+                           target_buffer[check_offset + 2],
+                           target_buffer[check_offset + 3]);
+                    found_pixel = true;
+                    break;
+                }
+            }
+            if (found_pixel) break;
+        }
+        
+        if (!found_pixel) {
+            printf("  警告: 在目标区域未找到非透明像素\n");
+        }
+    }
+    
+    // 最终统计
+    printf("\n最终统计:\n");
+    uint32_t total_non_transparent = 0;
+    for (size_t i = 0; i < TARGET_SIZE * TARGET_SIZE; i++) {
+        if (target_buffer[i * 4 + 3] > 0) {
+            total_non_transparent++;
+        }
+    }
+    printf("  总非透明像素数: %u / %u (%.2f%%)\n", 
+           total_non_transparent, TARGET_SIZE * TARGET_SIZE,
+           100.0 * total_non_transparent / (TARGET_SIZE * TARGET_SIZE));
+    
+    // 写入输出文件
+    std::string output_path = config.destination_dir + PATH_SEPARATOR + pattern.output_filename;
+    
+    printf("\n写入输出: %s\n", output_path.c_str());
     
     if (!stbi_write_png(output_path.c_str(), TARGET_SIZE, TARGET_SIZE, 4, 
                         target_buffer.data(), TARGET_SIZE * 4)) {
