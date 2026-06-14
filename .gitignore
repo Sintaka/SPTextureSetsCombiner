@@ -30,6 +30,7 @@ npm-debug.log*
 # 构建输出
 dist/
 build/
+release/
 _bin/
 _downloaded_resources/
 *.exe
