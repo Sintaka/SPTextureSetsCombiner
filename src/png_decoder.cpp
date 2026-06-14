@@ -1,5 +1,6 @@
 // src/png_decoder.cpp - ÍêÈ«ÖØÐ´
 #include "png_decoder.h"
+#include <png.h>
 #include <cstdio>
 #include <cstring>
 #include <algorithm>

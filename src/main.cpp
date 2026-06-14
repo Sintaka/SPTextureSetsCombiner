@@ -7,6 +7,8 @@
 #include <memory>
 #include <algorithm>
 #include "png_decoder.h"
+#include "png_encoder.h"
+#include <omp.h>
 #include "config_parser.h"
 #include <fnmatch.h>
 
@@ -152,7 +154,7 @@ void processTexturePattern(const Config& config, const TexturePattern& pattern) 
     std::vector<uint8_t> target_buffer(TARGET_BUFFER_SIZE);
     uint32_t default_color = pattern.default_pixel;
     
-    // 修正：0xRRGGBBAA 格式
+    // 正确的颜色解析: 0xRRGGBBAA
     uint8_t a = (default_color >> 24) & 0xFF;
     uint8_t b = (default_color >> 16) & 0xFF;
     uint8_t g = (default_color >> 8) & 0xFF;
@@ -274,13 +276,14 @@ void processTexturePattern(const Config& config, const TexturePattern& pattern) 
            total_non_transparent, TARGET_SIZE * TARGET_SIZE,
            100.0 * total_non_transparent / (TARGET_SIZE * TARGET_SIZE));
     
-    // 写入输出文件
+    // 写入输出文件 - 使用 libpng
     std::string output_path = config.destination_dir + PATH_SEPARATOR + pattern.output_filename;
     
     printf("\n写入输出: %s\n", output_path.c_str());
     
-    if (!stbi_write_png(output_path.c_str(), TARGET_SIZE, TARGET_SIZE, 4, 
-                        target_buffer.data(), TARGET_SIZE * 4)) {
+    PNGEncoder encoder;
+    if (!encoder.write(output_path, TARGET_SIZE, TARGET_SIZE, 
+                      target_buffer.data(), 1)) {  // 压缩级别 1 (快速)
         fprintf(stderr, "错误: 无法写入PNG文件: %s\n", output_path.c_str());
     } else {
         printf("成功写入: %s (%.2f MB)\n", output_path.c_str(), 

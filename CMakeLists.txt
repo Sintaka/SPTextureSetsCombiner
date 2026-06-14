@@ -4,18 +4,26 @@ project(PainterTextureSetsCombiner)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# zlib — adjust paths to your local install
+# 查找 OpenMP
+find_package(OpenMP REQUIRED)
+
+# zlib
 set(ZLIB_INCLUDE_DIR "D:/Lib/zlib/zlib-1.3.2")
 set(ZLIB_LIBRARY "D:/Lib/zlib/zlib-1.3.2/build/libzd.dll.a")
+find_package(ZLIB REQUIRED)
+
+# libpng
+set(LIBPNG_INCLUDE_DIR "D:/Lib/libpng/lpng1658")
+set(LIBPNG_LIBRARY "D:/Lib/libpng/lpng1658/build/libpng16d.dll.a")
+# find_package(PNG REQUIRED)
 
 # stb lib
 set(stb_SOURCE_DIR "D:/Lib/stb")
 
-find_package(ZLIB REQUIRED)
-
 add_executable(combiner
     src/main.cpp
     src/png_decoder.cpp
+    src/png_encoder.cpp
     src/config_parser.cpp
     src/fnmatch.c
     src/safe-ctype.c
@@ -25,10 +33,14 @@ target_include_directories(combiner PRIVATE
     src
     ${stb_SOURCE_DIR}
     ${ZLIB_INCLUDE_DIRS}
+    ${LIBPNG_INCLUDE_DIR}
+    ${LIBPNG_INCLUDE_DIR}/build
 )
 
 target_link_libraries(combiner PRIVATE
     ${ZLIB_LIBRARIES}
+    ${LIBPNG_LIBRARY}
+    OpenMP::OpenMP_CXX
 )
 
 target_compile_definitions(combiner PRIVATE

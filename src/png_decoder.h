@@ -7,34 +7,35 @@
 #include <cstdint>
 #include <zlib.h>
 
-class PNGDecoder {
+class PNGDecoder
+{
 public:
     PNGDecoder();
     ~PNGDecoder();
-    
-    bool initialize(const std::string& filename);
+
+    bool initialize(const std::string &filename);
     bool decompressNextRow();
-    void writeRowToTarget(uint8_t* target, uint32_t target_width);
-    
+    void writeRowToTarget(uint8_t *target, uint32_t target_width);
+
     bool isFinished() const { return finished_; }
     uint32_t getWidth() const { return width_; }
     uint32_t getHeight() const { return height_; }
     uint32_t getCurrentRow() const { return current_row_; }
     size_t getMemoryUsage() const { return memory_usage_; }
-    const std::string& getSourceFilename() const { return source_filename_; }
-    
+    const std::string &getSourceFilename() const { return source_filename_; }
+
     // 新增：访问解码后的行数据
     uint8_t getBitDepth() const { return bit_depth_; }
-    const uint8_t* getRowBuffer() const { return row_buffer_.data(); }
-    const uint8_t* getOutputRow() const { return output_row_.data(); }
-    
+    const uint8_t *getRowBuffer() const { return row_buffer_.data(); }
+    const uint8_t *getOutputRow() const { return output_row_.data(); }
+
 private:
-    bool parseIHDR(const uint8_t* data);
-    bool extractIDATs(FILE* fp);
+    bool parseIHDR(const uint8_t *data);
+    bool extractIDATs(FILE *fp);
     void applyPNGFilter(uint8_t filter_type);
     uint8_t paethPredictor(uint8_t a, uint8_t b, uint8_t c);
     void downsample16to8();
-    
+
     z_stream zstream_;
     std::vector<uint8_t> idat_data_;
     uint32_t width_;
