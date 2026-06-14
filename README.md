@@ -21,7 +21,7 @@ TEXTURE_PATTERNS = [\
 Currently release on windows. you can recompile that easily to linux.
 
 <img width="663" height="643" alt="aa29073ea0ea77b9d3e52e5750852aa8" src="https://github.com/user-attachments/assets/5e8b91b0-ff66-4e84-bf88-420e5ac7263a" />\
-<img width="970" height="549" alt="屏幕截图 2026-06-15 045025" src="https://github.com/user-attachments/assets/7c38e774-0099-428a-8f92-2af205bd624d" />\
+<img width="801" height="534" alt="屏幕截图 2026-06-15 050614" src="https://github.com/user-attachments/assets/6d7b867c-5fa1-4192-9de4-7278602a1570" />\
 
 
 edit config.ini and hit run\
