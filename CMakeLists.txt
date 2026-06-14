@@ -10,7 +10,7 @@ find_package(OpenMP REQUIRED)
 # zlib
 set(ZLIB_INCLUDE_DIR "D:/Lib/zlib/zlib-1.3.2")
 set(ZLIB_LIBRARY "D:/Lib/zlib/zlib-1.3.2/build/libzd.dll.a")
-# find_package(ZLIB REQUIRED)
+find_package(ZLIB REQUIRED)
 
 # libpng
 set(LIBPNG_INCLUDE_DIR "D:/Lib/libpng/lpng1658")
